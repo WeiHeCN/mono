@@ -30,8 +30,10 @@
 using System;
 using System.IO;
 using System.Net;
+using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Text;
+using System.Collections.Generic;
 
 using NUnit.Framework;
 
@@ -148,6 +150,9 @@ namespace MonoTests.System.Net
 		}
 
 		[Test]
+#if FEATURE_NO_BSD_SOCKETS
+		[ExpectedException (typeof (PlatformNotSupportedException))]
+#endif
 		public void HttpMethod ()
 		{
 			var port = NetworkHelpers.FindFreePort ();
@@ -162,6 +167,9 @@ namespace MonoTests.System.Net
 		}
 
 		[Test]
+#if FEATURE_NO_BSD_SOCKETS
+		[ExpectedException (typeof (PlatformNotSupportedException))]
+#endif
 		public void HttpBasicAuthScheme ()
 		{
 			var port = NetworkHelpers.FindFreePort ();			
@@ -177,6 +185,9 @@ namespace MonoTests.System.Net
 		}
 
 		[Test]
+#if FEATURE_NO_BSD_SOCKETS
+		[ExpectedException (typeof (PlatformNotSupportedException))]
+#endif
 		public void HttpRequestUriIsNotDecoded ()
 		{
 			var port = NetworkHelpers.FindFreePort ();
@@ -190,7 +201,40 @@ namespace MonoTests.System.Net
 			listener.Close ();
 		}
 
+		[Test]
+#if FEATURE_NO_BSD_SOCKETS
+		[ExpectedException (typeof (PlatformNotSupportedException))]
+#endif
+		public void HttpRequestIsLocal ()
+		{
+			var port = NetworkHelpers.FindFreePort ();
+			var ips = new List<IPAddress> ();
+			ips.Add (IPAddress.Loopback);
+			foreach (var adapter in NetworkInterface.GetAllNetworkInterfaces ()) {
+				foreach (var ip in adapter.GetIPProperties ().UnicastAddresses) {
+					ips.Add (ip.Address);
+				}
+			}
+
+			foreach (var ip in ips) {
+				if (ip.AddressFamily != AddressFamily.InterNetwork)
+					continue;
+
+				HttpListener listener = HttpListener2Test.CreateAndStartListener (
+					"http://" + ip + ":" + port + "/HttpRequestIsLocal/");
+				NetworkStream ns = HttpListener2Test.CreateNS (ip, port);
+				HttpListener2Test.Send (ns, "GET /HttpRequestIsLocal/ HTTP/1.0\r\n\r\n");
+				HttpListenerContext ctx = listener.GetContext ();
+				HttpListenerRequest request = ctx.Request;
+				Assert.AreEqual (true, request.IsLocal, "IP " + ip + " is not local");
+				listener.Close ();
+			}
+		}
+
 		[Test] // #29927
+#if FEATURE_NO_BSD_SOCKETS
+		[ExpectedException (typeof (PlatformNotSupportedException))]
+#endif
 		public void HttpRequestUriUnescape ()
 		{
 			var prefix = "http://localhost:" + NetworkHelpers.FindFreePort () + "/";

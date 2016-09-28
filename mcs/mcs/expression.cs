@@ -2362,6 +2362,11 @@ namespace Mono.CSharp
 			eclass = ExprClass.Value;
 			TypeSpec etype = expr.Type;
 
+			if (type == null) {
+				type = InternalType.ErrorType;
+				return this;
+			}
+
 			if (!TypeSpec.IsReferenceType (type) && !type.IsNullableType) {
 				if (TypeManager.IsGenericParameter (type)) {
 					ec.Report.Error (413, loc,
@@ -3105,9 +3110,9 @@ namespace Mono.CSharp
 			public override Expression ConvertResult (ResolveContext ec, Binary b)
 			{
 				if (left != null) {
-					b.left = EmptyCast.Create (b.left, left);
+					b.left = Convert.UserDefinedConversion (ec, b.left, left, Convert.UserConversionRestriction.ImplicitOnly, b.loc) ?? EmptyCast.Create (b.left, left);
 				} else if (right != null) {
-					b.right = EmptyCast.Create (b.right, right);
+					b.right = Convert.UserDefinedConversion (ec, b.right, right, Convert.UserConversionRestriction.ImplicitOnly, b.loc) ?? EmptyCast.Create (b.right, right);
 				}
 
 				TypeSpec r_type = ReturnType;
@@ -7023,6 +7028,16 @@ namespace Mono.CSharp
 			}
 		}
 
+		bool statement_resolve;
+		public override ExpressionStatement ResolveStatement (BlockContext bc)
+		{
+			statement_resolve = true;
+			var es = base.ResolveStatement (bc);
+			statement_resolve = false;
+
+			return es;
+		}
+
 		protected override Expression DoResolve (ResolveContext rc)
 		{
 			ResolveConditionalAccessReceiver (rc);
@@ -7111,7 +7126,7 @@ namespace Mono.CSharp
 
 			var method = mg.BestCandidate;
 			type = mg.BestCandidateReturnType;
-			if (conditional_access_receiver)
+			if (conditional_access_receiver && !statement_resolve)
 				type = LiftMemberType (ec, type);
 
 			if (arguments == null && method.DeclaringType.BuiltinType == BuiltinTypeSpec.Type.Object && method.Name == Destructor.MetadataName) {
@@ -7173,7 +7188,7 @@ namespace Mono.CSharp
 						args.Insert (0, new Argument (inst.Resolve (ec), mod));
 					}
 				} else {	// is SimpleName
-					if (ec.IsStatic) {
+					if (ec.IsStatic || ec.HasAny (ResolveContext.Options.FieldInitializerScope | ResolveContext.Options.BaseInitializer)) {
 						args.Insert (0, new Argument (new TypeOf (ec.CurrentType, loc).Resolve (ec), Argument.AType.DynamicTypeName));
 					} else {
 						args.Insert (0, new Argument (new This (loc).Resolve (ec)));
@@ -7862,6 +7877,8 @@ namespace Mono.CSharp
 		{
 		}
 
+		public bool NoEmptyInterpolation { get; set; }
+
 		public ComposedTypeSpecifier Rank {
 			get {
 				return this.rank;
@@ -8072,11 +8089,21 @@ namespace Mono.CSharp
 			if (element == null)
 				return null;
 
-			if (element is CompoundAssign.TargetExpression) {
-				if (first_emit != null)
-					throw new InternalErrorException ("Can only handle one mutator at a time");
-				first_emit = element;
-				element = first_emit_temp = new LocalTemporary (element.Type);
+			var te = element as CompoundAssign.TargetExpression;
+			if (te != null) {
+				for (int i = 1; i < initializers.Count; ++i) {
+					if (initializers [i].ContainsEmitWithAwait ()) {
+						te.RequiresEmitWithAwait = true;
+						break;
+					}
+				}
+
+				if (!te.RequiresEmitWithAwait) {
+					if (first_emit != null)
+						throw new InternalErrorException ("Can only handle one mutator at a time");
+					first_emit = element;
+					element = first_emit_temp = new LocalTemporary (element.Type);
+				}
 			}
 
 			return Convert.ImplicitConversionRequired (
@@ -8398,9 +8425,30 @@ namespace Mono.CSharp
 
 		public override void Emit (EmitContext ec)
 		{
+			if (!NoEmptyInterpolation && EmitOptimizedEmpty (ec))
+				return;
+
 			var await_field = EmitToFieldSource (ec);
 			if (await_field != null)
 				await_field.Emit (ec);
+		}
+
+		bool EmitOptimizedEmpty (EmitContext ec)
+		{
+			if (arguments.Count != 1 || dimensions != 1)
+				return false;
+
+			var c = arguments [0] as Constant;
+			if (c == null || !c.IsZeroInteger)
+				return false;
+
+			var m = ec.Module.PredefinedMembers.ArrayEmpty.Get ();
+			if (m == null || ec.CurrentType.MemberDefinition.DeclaringAssembly == m.DeclaringType.MemberDefinition.DeclaringAssembly)
+				return false;
+
+			m = m.MakeGenericMethod (ec.MemberContext, array_element_type);
+			ec.Emit (OpCodes.Call, m);
+			return true;
 		}
 
 		protected sealed override FieldExpr EmitToFieldSource (EmitContext ec)
@@ -9916,7 +9964,7 @@ namespace Mono.CSharp
 
 			TypeSpec nested = null;
 			while (expr_type != null) {
-				nested = MemberCache.FindNestedType (expr_type, Name, Arity);
+				nested = MemberCache.FindNestedType (expr_type, Name, Arity, false);
 				if (nested == null) {
 					if (expr_type == tnew_expr) {
 						Error_IdentifierNotFound (rc, expr_type);
@@ -9924,7 +9972,7 @@ namespace Mono.CSharp
 					}
 
 					expr_type = tnew_expr;
-					nested = MemberCache.FindNestedType (expr_type, Name, Arity);
+					nested = MemberCache.FindNestedType (expr_type, Name, Arity, false);
 					ErrorIsInaccesible (rc, nested.GetSignatureForError (), loc);
 					break;
 				}
@@ -9965,7 +10013,7 @@ namespace Mono.CSharp
 
 		public void Error_IdentifierNotFound (IMemberContext rc, TypeSpec expr_type)
 		{
-			var nested = MemberCache.FindNestedType (expr_type, Name, -System.Math.Max (1, Arity));
+			var nested = MemberCache.FindNestedType (expr_type, Name, -System.Math.Max (1, Arity), false);
 
 			if (nested != null) {
 				Error_TypeArgumentsCannotBeUsed (rc, nested, expr.Location);
@@ -10904,9 +10952,18 @@ namespace Mono.CSharp
 
 		#region IBaseMembersProvider Members
 
-		IList<MemberSpec> OverloadResolver.IBaseMembersProvider.GetBaseMembers (TypeSpec baseType)
+		IList<MemberSpec> OverloadResolver.IBaseMembersProvider.GetBaseMembers (TypeSpec type)
 		{
-			return baseType == null ? null : MemberCache.FindMembers (baseType, MemberCache.IndexerNameAlias, false);
+			var baseType = type.BaseType;
+			var members = baseType == null ? null : MemberCache.FindMembers (baseType, MemberCache.IndexerNameAlias, false);
+
+			if (members == null && !type.IsInterface) {
+				var tps = queried_type as TypeParameterSpec;
+				if (tps != null)
+					members = MemberCache.FindInterfaceMembers (tps, MemberCache.IndexerNameAlias);
+			}
+
+			return members;
 		}
 
 		IParametersMember OverloadResolver.IBaseMembersProvider.GetOverrideMemberParameters (MemberSpec member)
@@ -12208,6 +12265,7 @@ namespace Mono.CSharp
 						throw new NotImplementedException ();
 
 					sf = ec.GetTemporaryField (type);
+					sf.AutomaticallyReuse = false;
 					sf.EmitAssign (ec, temp, false, false);
 					temp_target = sf;
 					temp.Release (ec);
@@ -12225,8 +12283,8 @@ namespace Mono.CSharp
 				temp.Release (ec);
 
 			if (sf != null)
-				sf.IsAvailableForReuse = true;
-
+				sf.PrepareCleanup (ec);
+			
 			return true;
 		}
 
@@ -12304,6 +12362,7 @@ namespace Mono.CSharp
 			int errors = ec.Report.Errors;
 			type.CreateContainer ();
 			type.DefineContainer ();
+			type.ExpandBaseInterfaces ();
 			type.Define ();
 			if ((ec.Report.Errors - errors) == 0) {
 				parent.Module.AddAnonymousType (type);

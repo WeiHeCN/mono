@@ -4,18 +4,7 @@
  *
  * Copyright (C) 2014 Xamarin Inc
  *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Library General Public
- * License 2.0 as published by the Free Software Foundation;
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Library General Public License for more details.
- *
- * You should have received a copy of the GNU Library General Public
- * License 2.0 along with this library; if not, write to the Free
- * Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ * Licensed under the MIT license. See LICENSE file in the project root for full license information.
  */
 
 /*
@@ -128,7 +117,7 @@ COPY_OR_MARK_FUNCTION_NAME (GCObject **ptr, GCObject *obj, SgenGrayQueue *queue)
 		MS_CALC_MARK_BIT (word, bit, obj);
 		SGEN_ASSERT (9, !MS_MARK_BIT (block, word, bit), "object %p already marked", obj);
 		MS_SET_MARK_BIT (block, word, bit);
-		binary_protocol_mark (obj, (gpointer)LOAD_VTABLE (obj), sgen_safe_object_get_size (obj));
+		binary_protocol_mark (obj, (gpointer)SGEN_LOAD_VTABLE (obj), sgen_safe_object_get_size (obj));
 
 		return FALSE;
 #endif
@@ -153,7 +142,8 @@ COPY_OR_MARK_FUNCTION_NAME (GCObject **ptr, GCObject *obj, SgenGrayQueue *queue)
 
 		SGEN_ASSERT (9, !SGEN_VTABLE_IS_PINNED (vtable_word), "Pinned object in non-pinned block?");
 
-		desc = sgen_vtable_get_descriptor ((GCVTable)vtable_word);
+		/* We untag the vtable for concurrent M&S, in case bridge is running and it tagged it */
+		desc = sgen_vtable_get_descriptor ((GCVTable)SGEN_POINTER_UNTAG_VTABLE (vtable_word));
 		type = desc & DESC_TYPE_MASK;
 
 		if (sgen_safe_object_is_small (obj, type)) {
@@ -194,7 +184,7 @@ COPY_OR_MARK_FUNCTION_NAME (GCObject **ptr, GCObject *obj, SgenGrayQueue *queue)
 
 			sgen_los_pin_object (obj);
 			if (SGEN_OBJECT_HAS_REFERENCES (obj))
-				GRAY_OBJECT_ENQUEUE (queue, obj, sgen_obj_get_descriptor (obj));
+				GRAY_OBJECT_ENQUEUE (queue, obj, desc);
 		}
 		return FALSE;
 	}
@@ -234,7 +224,7 @@ SCAN_OBJECT_FUNCTION_NAME (GCObject *full_object, SgenDescriptor desc, SgenGrayQ
 				COPY_OR_MARK_FUNCTION_NAME ((ptr), __old, queue); \
 			}						\
 		} else {                                                \
-			if (G_UNLIKELY (sgen_ptr_in_nursery (__old) && !sgen_ptr_in_nursery ((ptr)))) \
+			if (G_UNLIKELY (sgen_ptr_in_nursery (__old) && !sgen_ptr_in_nursery ((ptr)) && !sgen_cement_is_forced (__old))) \
 				mark_mod_union_card ((full_object), (void**)(ptr), __old); \
 			}						\
 		} while (0)
@@ -246,7 +236,7 @@ SCAN_OBJECT_FUNCTION_NAME (GCObject *full_object, SgenDescriptor desc, SgenGrayQ
 			PREFETCH_READ (__old);			\
 			COPY_OR_MARK_FUNCTION_NAME ((ptr), __old, queue); \
 		} else {                                                \
-			if (G_UNLIKELY (sgen_ptr_in_nursery (__old) && !sgen_ptr_in_nursery ((ptr)))) \
+			if (G_UNLIKELY (sgen_ptr_in_nursery (__old) && !sgen_ptr_in_nursery ((ptr)) && !sgen_cement_is_forced (__old))) \
 				mark_mod_union_card ((full_object), (void**)(ptr), __old); \
 			}						\
 		} while (0)
@@ -267,6 +257,37 @@ SCAN_OBJECT_FUNCTION_NAME (GCObject *full_object, SgenDescriptor desc, SgenGrayQ
 #define SCAN_OBJECT_PROTOCOL
 #include "sgen-scan-object.h"
 }
+
+#ifdef SCAN_VTYPE_FUNCTION_NAME 
+static void
+SCAN_VTYPE_FUNCTION_NAME (GCObject *full_object, char *start, SgenDescriptor desc, SgenGrayQueue *queue BINARY_PROTOCOL_ARG (size_t size))
+{
+	SGEN_OBJECT_LAYOUT_STATISTICS_DECLARE_BITMAP;
+
+#ifdef HEAVY_STATISTICS
+	/* FIXME: We're half scanning this object.  How do we account for that? */
+	//add_scanned_object (start);
+#endif
+
+	/* The descriptors include info about the object header as well */
+	start -= SGEN_CLIENT_OBJECT_HEADER_SIZE;
+
+	/* We use the same HANDLE_PTR from the obj scan function */
+#define SCAN_OBJECT_NOVTABLE
+#define SCAN_OBJECT_PROTOCOL
+#include "sgen-scan-object.h"
+
+	SGEN_OBJECT_LAYOUT_STATISTICS_COMMIT_BITMAP;
+}
+#endif
+
+#ifdef SCAN_PTR_FIELD_FUNCTION_NAME
+static void
+SCAN_PTR_FIELD_FUNCTION_NAME (GCObject *full_object, GCObject **ptr, SgenGrayQueue *queue)
+{
+	HANDLE_PTR (ptr, NULL);
+}
+#endif
 
 static gboolean
 DRAIN_GRAY_STACK_FUNCTION_NAME (SgenGrayQueue *queue)
@@ -293,5 +314,9 @@ DRAIN_GRAY_STACK_FUNCTION_NAME (SgenGrayQueue *queue)
 
 #undef COPY_OR_MARK_FUNCTION_NAME
 #undef COPY_OR_MARK_WITH_EVACUATION
+#undef COPY_OR_MARK_CONCURRENT
+#undef COPY_OR_MARK_CONCURRENT_WITH_EVACUATION
 #undef SCAN_OBJECT_FUNCTION_NAME
+#undef SCAN_VTYPE_FUNCTION_NAME
+#undef SCAN_PTR_FIELD_FUNCTION_NAME
 #undef DRAIN_GRAY_STACK_FUNCTION_NAME

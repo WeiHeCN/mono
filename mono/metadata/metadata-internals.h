@@ -175,10 +175,12 @@ typedef struct {
 
 struct _MonoImage {
 	/*
-	 * The number of assemblies which reference this MonoImage though their 'image'
-	 * field plus the number of images which reference this MonoImage through their 
-	 * 'modules' field, plus the number of threads holding temporary references to
-	 * this image between calls of mono_image_open () and mono_image_close ().
+	 * This count is incremented during these situations:
+	 *   - An assembly references this MonoImage though its 'image' field
+	 *   - This MonoImage is present in the 'files' field of an image
+	 *   - This MonoImage is present in the 'modules' field of an image
+	 *   - A thread is holding a temporary reference to this MonoImage between
+	 *     calls to mono_image_open and mono_image_close ()
 	 */
 	int   ref_count;
 
@@ -258,18 +260,20 @@ struct _MonoImage {
 	MonoAssembly **references;
 	int nreferences;
 
-	/* Code files in the assembly. */
+	/* Code files in the assembly. The main assembly has a "file" table and also a "module"
+	 * table, where the module table is a subset of the file table. We track both lists,
+	 * and because we can lazy-load them at different times we reference-increment both.
+	 */
 	MonoImage **modules;
 	guint32 module_count;
 	gboolean *modules_loaded;
 
-	/*
-	 * Files in the assembly. Items are either NULL or alias items in modules, so this does not impact ref_count.
-	 * Protected by the image lock.
-	 */
 	MonoImage **files;
+	guint32 file_count;
 
 	gpointer aot_module;
+
+	guint8 aotid[16];
 
 	/*
 	 * The Assembly this image was loaded from.
@@ -334,6 +338,8 @@ struct _MonoImage {
 	GHashTable *ldflda_wrapper_cache;
 	GHashTable *stfld_wrapper_cache;
 	GHashTable *isinst_cache;
+
+	GHashTable *icall_wrapper_cache;
 	GHashTable *castclass_cache;
 	GHashTable *proxy_isinst_cache;
 	GHashTable *rgctx_template_hash; /* LOCKING: templates lock */
@@ -735,6 +741,10 @@ mono_metadata_parse_mh_full                 (MonoImage             *image,
 					     const char            *ptr,
 						 MonoError *error);
 
+MonoMethodSignature  *mono_metadata_parse_signature_checked (MonoImage *image, 
+							     uint32_t    token,
+							     MonoError *error);
+
 gboolean
 mono_method_get_header_summary (MonoMethod *method, MonoMethodHeaderSummary *summary);
 
@@ -774,7 +784,7 @@ gboolean
 mono_metadata_generic_param_equal (MonoGenericParam *p1, MonoGenericParam *p2);
 
 void mono_dynamic_stream_reset  (MonoDynamicStream* stream);
-void mono_assembly_addref       (MonoAssembly *assembly);
+MONO_API void mono_assembly_addref       (MonoAssembly *assembly);
 void mono_assembly_load_friends (MonoAssembly* ass);
 gboolean mono_assembly_has_skip_verification (MonoAssembly* ass);
 

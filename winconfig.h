@@ -299,9 +299,6 @@
 /* No GC support. */
 /* #undef HAVE_NULL_GC */
 
-/* Have oprofile support */
-/* #undef HAVE_OPROFILE */
-
 /* Define to 1 if you have the `poll' function. */
 /* #undef HAVE_POLL */
 
@@ -370,6 +367,9 @@
 
  /* Have signal */
 #define HAVE_SIGNAL 1
+
+ /* Define to 1 if you have the <signal.h> header file. */
+#define HAVE_SIGNAL_H 1
 
 /* Have signbit */
 /* #undef HAVE_SIGNBIT */
@@ -643,4 +643,24 @@
 
 /* Version number of package */
 #define VERSION "#MONO_VERSION#"
+
+#ifndef HAVE_WINAPI_FAMILY_SUPPORT
+
+#define HAVE_WINAPI_FAMILY_SUPPORT
+
+/* WIN API Family support */
+#include <winapifamily.h>
+
+#if WINAPI_FAMILY_PARTITION(WINAPI_PARTITION_DESKTOP)
+	#define HAVE_CLASSIC_WINAPI_SUPPORT 1
+	#define HAVE_UWP_WINAPI_SUPPORT 0
+#elif WINAPI_FAMILY_PARTITION(WINAPI_PARTITION_APP)
+	#define HAVE_CLASSIC_WINAPI_SUPPORT 0
+	#define HAVE_UWP_WINAPI_SUPPORT 1
+#else
+	#define HAVE_CLASSIC_WINAPI_SUPPORT 0
+	#define HAVE_UWP_WINAPI_SUPPORT 0
+#endif
+
+#endif
 #endif

@@ -21,7 +21,7 @@
 #include <mono/metadata/threads.h>
 #include <mono/metadata/profiler-private.h>
 #include <mono/utils/mono-math.h>
-#include <mono/utils/mono-hwcap-ia64.h>
+#include <mono/utils/mono-hwcap.h>
 
 #include "trace.h"
 #include "mini-ia64.h"
@@ -3777,17 +3777,18 @@ ia64_patch (unsigned char* code, gpointer target)
 }
 
 void
-mono_arch_patch_code (MonoCompile *cfg, MonoMethod *method, MonoDomain *domain, guint8 *code, MonoJumpInfo *ji, gboolean run_cctors)
+mono_arch_patch_code (MonoCompile *cfg, MonoMethod *method, MonoDomain *domain, guint8 *code, MonoJumpInfo *ji, gboolean run_cctors, MonoError *error)
 {
 	MonoJumpInfo *patch_info;
+
+	mono_error_init (error);
 
 	for (patch_info = ji; patch_info; patch_info = patch_info->next) {
 		unsigned char *ip = patch_info->ip.i + code;
 		const unsigned char *target;
-		MonoError error;
 
-		target = mono_resolve_patch_target (method, domain, code, patch_info, run_cctors, &error);
-		mono_error_raise_exception (&error); /* FIXME: don't raise here */
+		target = mono_resolve_patch_target (method, domain, code, patch_info, run_cctors, error);
+		return_if_nok (error);
 
 		if (patch_info->type == MONO_PATCH_INFO_NONE)
 			continue;
@@ -4531,8 +4532,8 @@ mono_arch_free_jit_tls_data (MonoJitTlsData *tls)
  * LOCKING: called with the domain lock held
  */
 gpointer
-mono_arch_build_imt_thunk (MonoVTable *vtable, MonoDomain *domain, MonoIMTCheckItem **imt_entries, int count,
-	gpointer fail_tramp)
+mono_arch_build_imt_trampoline (MonoVTable *vtable, MonoDomain *domain, MonoIMTCheckItem **imt_entries, int count,
+								gpointer fail_tramp)
 {
 	int i;
 	int size = 0;
@@ -4612,7 +4613,7 @@ mono_arch_build_imt_thunk (MonoVTable *vtable, MonoDomain *domain, MonoIMTCheckI
 
 	size = code.buf - buf;
 	if (fail_tramp) {
-		start = mono_method_alloc_generic_virtual_thunk (domain, size + 16);
+		start = mono_method_alloc_generic_virtual_trampoline (domain, size + 16);
 		start = (gpointer)ALIGN_TO (start, 16);
 	} else {
 		start = mono_domain_code_reserve (domain, size);

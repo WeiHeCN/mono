@@ -7,6 +7,7 @@
  *
  * Copyright 2001-2003 Ximian, Inc (http://www.ximian.com)
  * Copyright 2004-2009 Novell, Inc (http://www.novell.com)
+ * Licensed under the MIT license. See LICENSE file in the project root for full license information.
  */
 
 #include <config.h>
@@ -1821,7 +1822,7 @@ mono_metadata_get_param_attrs (MonoImage *m, int def, int param_count)
 /*
  * mono_metadata_parse_signature:
  * @image: metadata context
- * @toke: metadata token
+ * @token: metadata token
  *
  * Decode a method signature stored in the STANDALONESIG table
  *
@@ -1832,13 +1833,35 @@ mono_metadata_parse_signature (MonoImage *image, guint32 token)
 {
 	MonoError error;
 	MonoMethodSignature *ret;
+	ret = mono_metadata_parse_signature_checked (image, token, &error);
+	mono_error_cleanup (&error);
+	return ret;
+}
+
+/*
+ * mono_metadata_parse_signature_checked:
+ * @image: metadata context
+ * @token: metadata token
+ * @error: set on error
+ *
+ * Decode a method signature stored in the STANDALONESIG table
+ *
+ * Returns: a MonoMethodSignature describing the signature. On failure
+ * returns NULL and sets @error.
+ */
+MonoMethodSignature*
+mono_metadata_parse_signature_checked (MonoImage *image, guint32 token, MonoError *error)
+{
+
+	mono_error_init (error);
 	MonoTableInfo *tables = image->tables;
 	guint32 idx = mono_metadata_token_index (token);
 	guint32 sig;
 	const char *ptr;
 
-	if (image_is_dynamic (image))
-		return (MonoMethodSignature *)mono_lookup_dynamic_token (image, token, NULL);
+	if (image_is_dynamic (image)) {
+		return (MonoMethodSignature *)mono_lookup_dynamic_token (image, token, NULL, error);
+	}
 
 	g_assert (mono_metadata_token_table(token) == MONO_TABLE_STANDALONESIG);
 		
@@ -1847,9 +1870,7 @@ mono_metadata_parse_signature (MonoImage *image, guint32 token)
 	ptr = mono_metadata_blob_heap (image, sig);
 	mono_metadata_decode_blob_size (ptr, &ptr);
 
-	ret = mono_metadata_parse_method_signature_full (image, NULL, 0, ptr, NULL, &error);
-	mono_error_cleanup (&error); /*FIXME don't swallow the error message*/
-	return ret;
+	return mono_metadata_parse_method_signature_full (image, NULL, 0, ptr, NULL, error);
 }
 
 /*
@@ -2045,13 +2066,11 @@ mono_metadata_parse_method_signature_full (MonoImage *m, MonoGenericContainer *c
 	for (i = 0; i < method->param_count; ++i) {
 		if (*ptr == MONO_TYPE_SENTINEL) {
 			if (method->call_convention != MONO_CALL_VARARG || def) {
-				mono_loader_assert_no_error ();
 				mono_error_set_bad_image (error, m, "Found sentinel for methoddef or no vararg");
 				g_free (pattrs);
 				return NULL;
 			}
 			if (method->sentinelpos >= 0) {
-				mono_loader_assert_no_error ();
 				mono_error_set_bad_image (error, m, "Found sentinel twice in the same signature.");
 				g_free (pattrs);
 				return NULL;
@@ -2086,7 +2105,6 @@ mono_metadata_parse_method_signature_full (MonoImage *m, MonoGenericContainer *c
 	 * Add signature to a cache and increase ref count...
 	 */
 
-	mono_loader_assert_no_error ();
 	return method;
 }
 
@@ -2766,23 +2784,13 @@ mono_metadata_clean_for_image (MonoImage *image)
 static void
 free_inflated_method (MonoMethodInflated *imethod)
 {
-	int i;
 	MonoMethod *method = (MonoMethod*)imethod;
 
 	if (method->signature)
 		mono_metadata_free_inflated_signature (method->signature);
 
-	if (!((method->flags & METHOD_ATTRIBUTE_ABSTRACT) || (method->iflags & METHOD_IMPL_ATTRIBUTE_RUNTIME) || (method->iflags & METHOD_IMPL_ATTRIBUTE_INTERNAL_CALL) || (method->flags & METHOD_ATTRIBUTE_PINVOKE_IMPL))) {
-		MonoMethodHeader *header = imethod->header;
-
-		if (header) {
-			/* Allocated in inflate_generic_header () */
-			for (i = 0; i < header->num_locals; ++i)
-				mono_metadata_free_type (header->locals [i]);
-			g_free (header->clauses);
-			g_free (header);
-		}
-	}
+	if (method->wrapper_type)
+		g_free (((MonoMethodWrapper*)method)->method_data);
 
 	g_free (method);
 }
@@ -2801,8 +2809,6 @@ static void
 free_generic_class (MonoGenericClass *gclass)
 {
 	/* The gclass itself is allocated from the image set mempool */
-	if (gclass->is_dynamic)
-		mono_reflection_free_dynamic_generic_class (gclass);
 	if (gclass->cached_class && gclass->cached_class->interface_id)
 		mono_unload_interface_id (gclass->cached_class);
 }
@@ -2979,13 +2985,9 @@ mono_metadata_lookup_generic_class (MonoClass *container_class, MonoGenericInst 
 		return gclass;
 	}
 
-	if (is_dynamic) {
-		MonoDynamicGenericClass *dgclass = mono_image_set_new0 (set, MonoDynamicGenericClass, 1);
-		gclass = &dgclass->generic_class;
+	gclass = mono_image_set_new0 (set, MonoGenericClass, 1);
+	if (is_dynamic)
 		gclass->is_dynamic = 1;
-	} else {
-		gclass = mono_image_set_new0 (set, MonoGenericClass, 1);
-	}
 
 	gclass->is_tb_open = is_tb_open;
 	gclass->container_class = container_class;
@@ -3385,6 +3387,10 @@ do_mono_metadata_parse_type (MonoType *type, MonoImage *m, MonoGenericContainer 
 			return FALSE;
 
 		type->data.klass = mono_class_from_mono_type (etype);
+
+		if (transient)
+			mono_metadata_free_type (etype);
+
 		g_assert (type->data.klass); //This was previously a check for NULL, but mcfmt should never fail. It can return a borken MonoClass, but should return at least something.
 		break;
 	}
@@ -6060,6 +6066,21 @@ mono_guid_to_string (const guint8 *guid)
 				guid[10], guid[11], guid[12], guid[13], guid[14], guid[15]);
 }
 
+/**
+ * mono_guid_to_string_minimal:
+ *
+ * Converts a 16 byte Microsoft GUID to lower case no '-' representation..
+ */
+char *
+mono_guid_to_string_minimal (const guint8 *guid)
+{
+	return g_strdup_printf ("%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x",
+				guid[3], guid[2], guid[1], guid[0],
+				guid[5], guid[4],
+				guid[7], guid[6],
+				guid[8], guid[9],
+				guid[10], guid[11], guid[12], guid[13], guid[14], guid[15]);
+}
 static gboolean
 get_constraints (MonoImage *image, int owner, MonoClass ***constraints, MonoGenericContainer *container, MonoError *error)
 {
@@ -6168,7 +6189,6 @@ mono_metadata_load_generic_param_constraints_checked (MonoImage *image, guint32 
 		return TRUE;
 	for (i = 0; i < container->type_argc; i++) {
 		if (!get_constraints (image, start_row + i, &mono_generic_container_get_param_info (container, i)->constraints, container, error)) {
-			mono_loader_assert_no_error ();
 			return FALSE;
 		}
 	}
@@ -6434,6 +6454,12 @@ mono_type_is_reference (MonoType *type)
 		(type->type == MONO_TYPE_OBJECT) || (type->type == MONO_TYPE_ARRAY)) ||
 		((type->type == MONO_TYPE_GENERICINST) &&
 		!mono_metadata_generic_class_is_valuetype (type->data.generic_class))));
+}
+
+mono_bool
+mono_type_is_generic_parameter (MonoType *type)
+{
+	return !type->byref && (type->type == MONO_TYPE_VAR || type->type == MONO_TYPE_MVAR);
 }
 
 /**

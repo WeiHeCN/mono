@@ -19,7 +19,7 @@
 #include <mono/metadata/appdomain.h>
 #include <mono/metadata/debug-helpers.h>
 #include <mono/utils/mono-mmap.h>
-#include <mono/utils/mono-hwcap-mips.h>
+#include <mono/utils/mono-hwcap.h>
 
 #include <mono/arch/mips/mips-codegen.h>
 
@@ -714,8 +714,8 @@ mono_arch_init (void)
 {
 	mono_os_mutex_init_recursive (&mini_arch_mutex);
 
-	ss_trigger_page = mono_valloc (NULL, mono_pagesize (), MONO_MMAP_READ|MONO_MMAP_32BIT);
-	bp_trigger_page = mono_valloc (NULL, mono_pagesize (), MONO_MMAP_READ|MONO_MMAP_32BIT);
+	ss_trigger_page = mono_valloc (NULL, mono_pagesize (), MONO_MMAP_READ|MONO_MMAP_32BIT, MONO_MEM_ACCOUNT_OTHER);
+	bp_trigger_page = mono_valloc (NULL, mono_pagesize (), MONO_MMAP_READ|MONO_MMAP_32BIT, MONO_MEM_ACCOUNT_OTHER);
 	mono_mprotect (bp_trigger_page, mono_pagesize (), 0);
 }
 
@@ -4671,10 +4671,11 @@ mono_arch_register_lowlevel_calls (void)
 }
 
 void
-mono_arch_patch_code (MonoCompile *cfg, MonoMethod *method, MonoDomain *domain, guint8 *code, MonoJumpInfo *ji, gboolean run_cctors)
+mono_arch_patch_code (MonoCompile *cfg, MonoMethod *method, MonoDomain *domain, guint8 *code, MonoJumpInfo *ji, gboolean run_cctors, MonoError *error)
 {
 	MonoJumpInfo *patch_info;
-	MonoError error;
+
+	mono_error_init (error);
 
 	for (patch_info = ji; patch_info; patch_info = patch_info->next) {
 		unsigned char *ip = patch_info->ip.i + code;
@@ -4708,8 +4709,9 @@ mono_arch_patch_code (MonoCompile *cfg, MonoMethod *method, MonoDomain *domain, 
 		case MONO_PATCH_INFO_R4:
 		case MONO_PATCH_INFO_R8:
 			/* from OP_AOTCONST : lui + addiu */
-			target = mono_resolve_patch_target (method, domain, code, patch_info, run_cctors, &error);
-			mono_error_raise_exception (&error); /* FIXME: don't raise here */
+			target = mono_resolve_patch_target (method, domain, code, patch_info, run_cctors, error);
+			return_if_nok (error);
+
 			patch_lui_addiu ((guint32 *)(void *)ip, (guint32)target);
 			continue;
 #if 0
@@ -4722,8 +4724,9 @@ mono_arch_patch_code (MonoCompile *cfg, MonoMethod *method, MonoDomain *domain, 
 			/* everything is dealt with at epilog output time */
 			continue;
 		default:
-			target = mono_resolve_patch_target (method, domain, code, patch_info, run_cctors, &error);
-			mono_error_raise_exception (&error); /* FIXME: don't raise here */
+			target = mono_resolve_patch_target (method, domain, code, patch_info, run_cctors, error);
+			return_if_nok (error);
+
 			mips_patch ((guint32 *)(void *)ip, (guint32)target);
 			break;
 		}
@@ -5886,8 +5889,8 @@ mono_arch_context_get_int_reg (MonoContext *ctx, int reg)
  * LOCKING: called with the domain lock held
  */
 gpointer
-mono_arch_build_imt_thunk (MonoVTable *vtable, MonoDomain *domain, MonoIMTCheckItem **imt_entries, int count,
-	gpointer fail_tramp)
+mono_arch_build_imt_trampoline (MonoVTable *vtable, MonoDomain *domain, MonoIMTCheckItem **imt_entries, int count,
+								gpointer fail_tramp)
 {
 	int i;
 	int size = 0;
@@ -5925,7 +5928,7 @@ mono_arch_build_imt_thunk (MonoVTable *vtable, MonoDomain *domain, MonoIMTCheckI
 	/* the initial load of the vtable address */
 	size += MIPS_LOAD_SEQUENCE_LENGTH;
 	if (fail_tramp) {
-		code = mono_method_alloc_generic_virtual_thunk (domain, size);
+		code = mono_method_alloc_generic_virtual_trampoline (domain, size);
 	} else {
 		code = mono_domain_code_reserve (domain, size);
 	}
@@ -6013,7 +6016,7 @@ mono_arch_build_imt_thunk (MonoVTable *vtable, MonoDomain *domain, MonoIMTCheckI
 	}
 
 	if (!fail_tramp)
-		mono_stats.imt_thunks_size += code - start;
+		mono_stats.imt_trampolines_size += code - start;
 	g_assert (code - start <= size);
 	mono_arch_flush_icache (start, size);
 

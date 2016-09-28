@@ -7,6 +7,7 @@
  *
  * Copyright 2002-2003 Ximian, Inc (http://www.ximian.com)
  * Copyright 2004-2009 Novell, Inc (http://www.novell.com)
+ * Licensed under the MIT license. See LICENSE file in the project root for full license information.
  */
 #include "config.h"
 #include <glib.h>
@@ -89,6 +90,39 @@
 #define CONFIG_CPU "unknownCPU"
 #endif
 #endif
+
+/**
+ * mono_config_get_os:
+ *
+ * Returns the operating system that Mono is running on, as used for dllmap entries.
+ */
+const char *
+mono_config_get_os (void)
+{
+	return CONFIG_OS;
+}
+
+/**
+ * mono_config_get_cpu:
+ *
+ * Returns the architecture that Mono is running on, as used for dllmap entries.
+ */
+const char *
+mono_config_get_cpu (void)
+{
+	return CONFIG_CPU;
+}
+
+/**
+ * mono_config_get_wordsize:
+ *
+ * Returns the word size that Mono is running on, as used for dllmap entries.
+ */
+const char *
+mono_config_get_wordsize (void)
+{
+	return CONFIG_WORDSIZE;
+}
 
 static void start_element (GMarkupParseContext *context, 
                            const gchar         *element_name,
@@ -701,7 +735,7 @@ publisher_policy_start (gpointer user_data,
 		memset (&info->old_version_bottom, 0, sizeof (info->old_version_bottom));
 		memset (&info->old_version_top, 0, sizeof (info->old_version_top));
 		memset (&info->new_version, 0, sizeof (info->new_version));
-	} if (!strcmp (element_name, "assemblyIdentity")) {
+	} else if (!strcmp (element_name, "assemblyIdentity")) {
 		for (n = 0; attribute_names [n]; n++) {
 			const gchar *attribute_name = attribute_names [n];
 			

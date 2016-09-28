@@ -1,6 +1,7 @@
 /*
  * Appdomain-related internal data structures and functions.
  * Copyright 2012 Xamarin Inc (http://www.xamarin.com)
+ * Licensed under the MIT license. See LICENSE file in the project root for full license information.
  */
 #ifndef __MONO_METADATA_DOMAIN_INTERNALS_H__
 #define __MONO_METADATA_DOMAIN_INTERNALS_H__
@@ -324,7 +325,10 @@ struct _MonoDomain {
 	/* hashtables for Reflection handles */
 	MonoGHashTable     *type_hash;
 	MonoGHashTable     *refobject_hash;
-	/* a GC-tracked array to keep references to the static fields of types */
+	/*
+	 * A GC-tracked array to keep references to the static fields of types.
+	 * See note [Domain Static Data Array].
+	 */
 	gpointer           *static_data_array;
 	/* maps class -> type initialization exception object */
 	MonoGHashTable    *type_init_exception_hash;
@@ -379,16 +383,13 @@ struct _MonoDomain {
 	GHashTable	   *method_rgctx_hash;
 
 	GHashTable	   *generic_virtual_cases;
-	MonoThunkFreeList **thunk_free_lists;
-
-	GHashTable     *generic_virtual_thunks;
 
 	/* Information maintained by the JIT engine */
 	gpointer runtime_info;
 
 	/*thread pool jobs, used to coordinate shutdown.*/
 	volatile int			threadpool_jobs;
-	HANDLE				cleanup_semaphore;
+	gpointer				cleanup_semaphore;
 	
 	/* Contains the compiled runtime invoke wrapper used by finalizers */
 	gpointer            finalize_runtime_invoke;
@@ -408,6 +409,7 @@ struct _MonoDomain {
 	MonoImage *socket_assembly;
 	MonoClass *sockaddr_class;
 	MonoClassField *sockaddr_data_field;
+	MonoClassField *sockaddr_data_length_field;
 
 	/* Cache function pointers for architectures  */
 	/* that require wrappers */
@@ -440,8 +442,8 @@ typedef struct  {
 
 typedef MonoDomain* (*MonoLoadFunc) (const char *filename, const char *runtime_version);
 
-void mono_domain_lock (MonoDomain *domain);
-void mono_domain_unlock (MonoDomain *domain);
+void mono_domain_lock (MonoDomain *domain) MONO_LLVM_INTERNAL;
+void mono_domain_unlock (MonoDomain *domain) MONO_LLVM_INTERNAL;
 
 void
 mono_install_runtime_load  (MonoLoadFunc func);
@@ -519,12 +521,6 @@ mono_domain_code_reserve_align (MonoDomain *domain, int size, int alignment);
 
 void
 mono_domain_code_commit (MonoDomain *domain, void *data, int size, int newsize);
-
-void *
-nacl_domain_get_code_dest (MonoDomain *domain, void *data);
-
-void 
-nacl_domain_code_validate (MonoDomain *domain, guint8 **buf_base, int buf_size, guint8 **code_end);
 
 void
 mono_domain_code_foreach (MonoDomain *domain, MonoCodeManagerFunc func, void *user_data);
@@ -700,5 +696,9 @@ mono_runtime_init_checked (MonoDomain *domain, MonoThreadStartCB start_cb, MonoT
 
 void
 mono_context_init_checked (MonoDomain *domain, MonoError *error);
+
+gboolean
+mono_assembly_get_reference_assembly_attribute (MonoAssembly *assembly, MonoError *error);
+
 
 #endif /* __MONO_METADATA_DOMAIN_INTERNALS_H__ */

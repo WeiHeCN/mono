@@ -3,9 +3,6 @@
 #if MONO_SECURITY_ALIAS
 extern alias MonoSecurity;
 #endif
-#if MONO_X509_ALIAS
-extern alias PrebuiltSystem;
-#endif
 
 #if MONO_SECURITY_ALIAS
 using MonoSecurity::Mono.Security.Interface;
@@ -16,13 +13,8 @@ using Mono.Security.Interface;
 using MSX = Mono.Security.X509;
 using Mono.Security.X509.Extensions;
 #endif
-#if MONO_X509_ALIAS
-using XX509CertificateCollection = PrebuiltSystem::System.Security.Cryptography.X509Certificates.X509CertificateCollection;
-using XX509Chain = PrebuiltSystem::System.Security.Cryptography.X509Certificates.X509Chain;
-#else
 using XX509CertificateCollection = System.Security.Cryptography.X509Certificates.X509CertificateCollection;
 using XX509Chain = System.Security.Cryptography.X509Certificates.X509Chain;
-#endif
 
 using System;
 using System.Net;
@@ -73,15 +65,11 @@ namespace Mono.Net.Security
 		public static X509Chain CreateX509Chain (XX509CertificateCollection certs)
 		{
 			var chain = new X509Chain ();
-			chain.ChainPolicy = new X509ChainPolicy ();
+			chain.ChainPolicy = new X509ChainPolicy ((X509CertificateCollection)(object)certs);
 
 #if !MOBILE
 			chain.ChainPolicy.RevocationMode = revocation_mode;
 #endif
-
-			for (int i = 1; i < certs.Count; i++) {
-				chain.ChainPolicy.ExtraStore.Add (certs [i]);
-			}
 
 			return chain;
 		}
@@ -121,7 +109,9 @@ namespace Mono.Net.Security
 		static bool CheckUsage (XX509CertificateCollection certs, string host, ref SslPolicyErrors errors, ref int status11)
 		{
 #if !MONOTOUCH
-			var leaf = (X509Certificate2)certs[0];
+			var leaf = certs[0] as X509Certificate2;
+			if (leaf == null)
+				leaf = new X509Certificate2 (certs[0]);
 			// for OSX and iOS we're using the native API to check for the SSL server policy and host names
 			if (!is_macosx) {
 				if (!CheckCertificateUsage (leaf)) {
@@ -146,13 +136,25 @@ namespace Mono.Net.Security
 			bool result;
 
 #if MONODROID
-			result = AndroidPlatform.TrustEvaluateSsl (certs);
-			if (result) {
-				// chain.Build() + GetErrorsFromChain() (above) will ALWAYS fail on
-				// Android (there are no mozroots or preinstalled root certificates),
-				// thus `errors` will ALWAYS have RemoteCertificateChainErrors.
-				// Android just verified the chain; clear RemoteCertificateChainErrors.
-				errors  &= ~SslPolicyErrors.RemoteCertificateChainErrors;
+			try {
+				result = AndroidPlatform.TrustEvaluateSsl (certs);
+				if (result) {
+					// FIXME: check whether this is still correct.
+					//
+					// chain.Build() + GetErrorsFromChain() (above) will ALWAYS fail on
+					// Android (there are no mozroots or preinstalled root certificates),
+					// thus `errors` will ALWAYS have RemoteCertificateChainErrors.
+					// Android just verified the chain; clear RemoteCertificateChainErrors.
+					errors  &= ~SslPolicyErrors.RemoteCertificateChainErrors;
+				} else {
+					errors |= SslPolicyErrors.RemoteCertificateChainErrors;
+					status11 = unchecked((int)0x800B010B);
+				}
+			} catch {
+				result = false;
+				errors |= SslPolicyErrors.RemoteCertificateChainErrors;
+				status11 = unchecked((int)0x800B010B);
+				// Ignore
 			}
 #else
 			if (is_macosx) {

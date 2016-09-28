@@ -3,18 +3,7 @@
  *
  * Copyright (C) 2014 Xamarin Inc
  *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Library General Public
- * License 2.0 as published by the Free Software Foundation;
- *
- * This library is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Library General Public License for more details.
- *
- * You should have received a copy of the GNU Library General Public
- * License 2.0 along with this library; if not, write to the Free
- * Software Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ * Licensed under the MIT license. See LICENSE file in the project root for full license information.
  */
 
 #include "config.h"
@@ -22,6 +11,7 @@
 #include "utils/mono-threads.h"
 #include "utils/mono-conc-hashtable.h"
 #include "utils/checked-build.h"
+#include "utils/w32handle.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -346,6 +336,9 @@ main (void)
 	memset (&ticallbacks, 0, sizeof (ticallbacks));
 	ticallbacks.thread_state_init = thread_state_init;
 	mono_threads_runtime_init (&ticallbacks);
+#ifndef HOST_WIN32
+	mono_w32handle_init ();
+#endif
 
 	mono_thread_info_attach ((gpointer)&cb);
 

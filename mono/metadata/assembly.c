@@ -7,6 +7,7 @@
  * Copyright 2001-2003 Ximian, Inc (http://www.ximian.com)
  * Copyright 2004-2009 Novell, Inc (http://www.novell.com)
  * Copyright 2011 Xamarin, Inc (http://www.xamarin.com)
+ * Licensed under the MIT license. See LICENSE file in the project root for full license information.
  */
 #include <config.h>
 #include <stdio.h>
@@ -15,7 +16,9 @@
 #include <string.h>
 #include <stdlib.h>
 #include "assembly.h"
+#include "assembly-internals.h"
 #include "image.h"
+#include "image-internals.h"
 #include "object-internals.h"
 #include <mono/metadata/loader.h>
 #include <mono/metadata/tabledefs.h>
@@ -202,6 +205,7 @@ static GSList *loaded_assembly_bindings = NULL;
 
 /* Class lazy loading functions */
 static GENERATE_TRY_GET_CLASS_WITH_CACHE (internals_visible, System.Runtime.CompilerServices, InternalsVisibleToAttribute)
+static GENERATE_TRY_GET_CLASS_WITH_CACHE (reference_assembly, System.Runtime.CompilerServices, ReferenceAssemblyAttribute)
 
 static MonoAssembly*
 mono_assembly_invoke_search_hook_internal (MonoAssemblyName *aname, MonoAssembly *requesting, gboolean refonly, gboolean postload);
@@ -920,6 +924,7 @@ mono_assembly_addref (MonoAssembly *assembly)
 #define WINFX_KEY "31bf3856ad364e35"
 #define ECMA_KEY "b77a5c561934e089"
 #define MSFINAL_KEY "b03f5f7f11d50a3a"
+#define COMPACTFRAMEWORK_KEY "969db8053d3322ac"
 
 typedef struct {
 	const char *name;
@@ -928,20 +933,34 @@ typedef struct {
 } KeyRemapEntry;
 
 static KeyRemapEntry key_remap_table[] = {
+	{ "CustomMarshalers", COMPACTFRAMEWORK_KEY, MSFINAL_KEY },
 	{ "Microsoft.CSharp", WINFX_KEY, MSFINAL_KEY },
+	{ "Microsoft.VisualBasic", COMPACTFRAMEWORK_KEY, MSFINAL_KEY },
 	{ "System", SILVERLIGHT_KEY, ECMA_KEY },
+	{ "System", COMPACTFRAMEWORK_KEY, ECMA_KEY },
 	{ "System.ComponentModel.Composition", WINFX_KEY, ECMA_KEY },
 	{ "System.ComponentModel.DataAnnotations", "ddd0da4d3e678217", WINFX_KEY },
 	{ "System.Core", SILVERLIGHT_KEY, ECMA_KEY },
+	{ "System.Core", COMPACTFRAMEWORK_KEY, ECMA_KEY },
+	{ "System.Data", COMPACTFRAMEWORK_KEY, ECMA_KEY },
+	{ "System.Data.DataSetExtensions", COMPACTFRAMEWORK_KEY, ECMA_KEY },
+	{ "System.Drawing", COMPACTFRAMEWORK_KEY, MSFINAL_KEY },
+	{ "System.Messaging", COMPACTFRAMEWORK_KEY, MSFINAL_KEY },
 	// FIXME: MS uses MSFINAL_KEY for .NET 4.5
 	{ "System.Net", SILVERLIGHT_KEY, MSFINAL_KEY },
 	{ "System.Numerics", WINFX_KEY, ECMA_KEY },
 	{ "System.Runtime.Serialization", SILVERLIGHT_KEY, ECMA_KEY },
+	{ "System.Runtime.Serialization", COMPACTFRAMEWORK_KEY, ECMA_KEY },
 	{ "System.ServiceModel", WINFX_KEY, ECMA_KEY },
+	{ "System.ServiceModel", COMPACTFRAMEWORK_KEY, ECMA_KEY },
 	{ "System.ServiceModel.Web", SILVERLIGHT_KEY, WINFX_KEY },
+	{ "System.Web.Services", COMPACTFRAMEWORK_KEY, MSFINAL_KEY },
 	{ "System.Windows", SILVERLIGHT_KEY, MSFINAL_KEY },
+	{ "System.Windows.Forms", COMPACTFRAMEWORK_KEY, ECMA_KEY },
 	{ "System.Xml", SILVERLIGHT_KEY, ECMA_KEY },
+	{ "System.Xml", COMPACTFRAMEWORK_KEY, ECMA_KEY },
 	{ "System.Xml.Linq", WINFX_KEY, ECMA_KEY },
+	{ "System.Xml.Linq", COMPACTFRAMEWORK_KEY, ECMA_KEY },
 	{ "System.Xml.Serialization", WINFX_KEY, ECMA_KEY }
 };
 
@@ -1528,8 +1547,9 @@ mono_assembly_open_from_bundle (const char *filename, MonoImageOpenStatus *statu
 {
 	int i;
 	char *name;
+	gchar *lowercase_filename;
 	MonoImage *image = NULL;
-
+	gboolean is_satellite = FALSE;
 	/*
 	 * we do a very simple search for bundled assemblies: it's not a general 
 	 * purpose assembly loading mechanism.
@@ -1538,11 +1558,13 @@ mono_assembly_open_from_bundle (const char *filename, MonoImageOpenStatus *statu
 	if (!bundles)
 		return NULL;
 
+	lowercase_filename = g_utf8_strdown (filename, -1);
+	is_satellite = g_str_has_suffix (lowercase_filename, ".resources.dll");
+	g_free (lowercase_filename);
 	name = g_path_get_basename (filename);
-
 	mono_assemblies_lock ();
 	for (i = 0; !image && bundles [i]; ++i) {
-		if (strcmp (bundles [i]->name, name) == 0) {
+		if (strcmp (bundles [i]->name, is_satellite ? filename : name) == 0) {
 			image = mono_image_open_from_data_with_name ((char*)bundles [i]->data, bundles [i]->size, FALSE, status, refonly, name);
 			break;
 		}
@@ -1550,7 +1572,7 @@ mono_assembly_open_from_bundle (const char *filename, MonoImageOpenStatus *statu
 	mono_assemblies_unlock ();
 	if (image) {
 		mono_image_addref (image);
-		mono_trace (G_LOG_LEVEL_INFO, MONO_TRACE_ASSEMBLY, "Assembly Loader loaded assembly from bundle: '%s'.", name);
+		mono_trace (G_LOG_LEVEL_INFO, MONO_TRACE_ASSEMBLY, "Assembly Loader loaded assembly from bundle: '%s'.", is_satellite ? filename : name);
 		g_free (name);
 		return image;
 	}
@@ -1635,7 +1657,14 @@ mono_assembly_open_full (const char *filename, MonoImageOpenStatus *status, gboo
 	if (!mono_assembly_is_in_gac (fname)) {
 		MonoError error;
 		new_fname = mono_make_shadow_copy (fname, &error);
-		mono_error_raise_exception (&error); /* FIXME don't raise here */
+		if (!is_ok (&error)) {
+			mono_trace (G_LOG_LEVEL_INFO, MONO_TRACE_ASSEMBLY,
+				    "Assembly Loader shadow copy error: %s.", mono_error_get_message (&error));
+			mono_error_cleanup (&error);
+			*status = MONO_IMAGE_IMAGE_INVALID;
+			g_free (fname);
+			return NULL;
+		}
 	}
 	if (new_fname && new_fname != fname) {
 		g_free (fname);
@@ -1778,6 +1807,37 @@ mono_assembly_load_friends (MonoAssembly* ass)
 	mono_memory_barrier ();
 	ass->friend_assembly_names_inited = TRUE;
 	mono_assemblies_unlock ();
+}
+
+
+/**
+ * mono_assembly_get_reference_assembly_attribute:
+ * @assembly: a MonoAssembly
+ * @error: set on error.
+ *
+ * Returns TRUE if @assembly has the System.Runtime.CompilerServices.ReferenceAssemblyAttribute set.
+ * On error returns FALSE and sets @error.
+ */
+gboolean
+mono_assembly_get_reference_assembly_attribute (MonoAssembly *assembly, MonoError *error)
+{
+	mono_error_init (error);
+
+	MonoCustomAttrInfo *attrs = mono_custom_attrs_from_assembly_checked (assembly, error);
+	return_val_if_nok (error, FALSE);
+	if (!attrs)
+		return FALSE;
+	MonoClass *ref_asm_class = mono_class_try_get_reference_assembly_class ();
+	gboolean result = FALSE;
+	for (int i = 0; i < attrs->num_attrs; ++i) {
+		MonoCustomAttrEntry *attr = &attrs->attrs [i];
+		if (attr->ctor && attr->ctor->klass && attr->ctor->klass == ref_asm_class) {
+			result = TRUE;
+			break;
+		}
+	}
+	mono_custom_attrs_free (attrs);
+	return result;
 }
 
 /**
@@ -1976,6 +2036,7 @@ mono_assembly_name_free (MonoAssemblyName *aname)
 	g_free ((void *) aname->name);
 	g_free ((void *) aname->culture);
 	g_free ((void *) aname->hash_value);
+	g_free ((guint8*) aname->public_key);
 }
 
 static gboolean
@@ -2282,11 +2343,11 @@ mono_assembly_name_parse_full (const char *name, MonoAssemblyName *aname, gboole
 			if (!g_ascii_strcasecmp (retargetable, "yes")) {
 				flags |= ASSEMBLYREF_RETARGETABLE_FLAG;
 			} else if (g_ascii_strcasecmp (retargetable, "no")) {
-				free (retargetable_uq);
+				g_free (retargetable_uq);
 				goto cleanup_and_fail;
 			}
 
-			free (retargetable_uq);
+			g_free (retargetable_uq);
 			tmp++;
 			continue;
 		}
@@ -2306,11 +2367,11 @@ mono_assembly_name_parse_full (const char *name, MonoAssemblyName *aname, gboole
 			else if (!g_ascii_strcasecmp (procarch, "AMD64"))
 				arch = MONO_PROCESSOR_ARCHITECTURE_AMD64;
 			else {
-				free (procarch_uq);
+				g_free (procarch_uq);
 				goto cleanup_and_fail;
 			}
 
-			free (procarch_uq);
+			g_free (procarch_uq);
 			tmp++;
 			continue;
 		}
@@ -2338,11 +2399,11 @@ mono_assembly_name_parse_full (const char *name, MonoAssemblyName *aname, gboole
 		key_uq == NULL ? key : key_uq,
 		flags, arch, aname, save_public_key);
 
-	free (dllname_uq);
-	free (version_uq);
-	free (culture_uq);
-	free (token_uq);
-	free (key_uq);
+	g_free (dllname_uq);
+	g_free (version_uq);
+	g_free (culture_uq);
+	g_free (token_uq);
+	g_free (key_uq);
 
 	g_strfreev (parts);
 	return res;
@@ -2596,10 +2657,12 @@ mono_assembly_load_with_partial_name (const char *name, MonoImageOpenStatus *sta
 		MonoReflectionAssembly *refasm;
 
 		refasm = mono_try_assembly_resolve (domain, mono_string_new (domain, name), NULL, FALSE, &error);
-		if (!mono_error_ok (&error)) {
+		if (!is_ok (&error)) {
 			g_free (fullname);
 			mono_assembly_name_free (aname);
-			mono_error_raise_exception (&error); /* FIXME don't raise here */
+			mono_error_cleanup (&error);
+			if (*status == MONO_IMAGE_OK)
+				*status = MONO_IMAGE_IMAGE_INVALID;
 		}
 
 		if (refasm)
@@ -2878,6 +2941,7 @@ get_per_domain_assembly_binding_info (MonoDomain *domain, MonoAssemblyName *anam
 static MonoAssemblyName*
 mono_assembly_apply_binding (MonoAssemblyName *aname, MonoAssemblyName *dest_name)
 {
+	MonoError error;
 	MonoAssemblyBindingInfo *info, *info2;
 	MonoImage *ppimage;
 	MonoDomain *domain;
@@ -2908,7 +2972,11 @@ mono_assembly_apply_binding (MonoAssemblyName *aname, MonoAssemblyName *dest_nam
 	if (domain && domain->setup && domain->setup->configuration_file) {
 		mono_domain_lock (domain);
 		if (!domain->assembly_bindings_parsed) {
-			gchar *domain_config_file_name = mono_string_to_utf8 (domain->setup->configuration_file);
+			gchar *domain_config_file_name = mono_string_to_utf8_checked (domain->setup->configuration_file, &error);
+			/* expect this to succeed because mono_domain_set_options_from_config () did
+			 * the same thing when the domain was created. */
+			mono_error_assert_ok (&error);
+
 			gchar *domain_config_file_path = mono_portability_find_file (domain_config_file_name, TRUE);
 
 			if (!domain_config_file_path)
@@ -3367,8 +3435,18 @@ mono_assembly_close (MonoAssembly *assembly)
 MonoImage*
 mono_assembly_load_module (MonoAssembly *assembly, guint32 idx)
 {
-	return mono_image_load_file_for_image (assembly->image, idx);
+	MonoError error;
+	MonoImage *result = mono_assembly_load_module_checked (assembly, idx, &error);
+	mono_error_assert_ok (&error);
+	return result;
 }
+
+MONO_API MonoImage*
+mono_assembly_load_module_checked (MonoAssembly *assembly, uint32_t idx, MonoError *error)
+{
+	return mono_image_load_file_for_image_checked (assembly->image, idx, error);
+}
+
 
 /**
  * mono_assembly_foreach:

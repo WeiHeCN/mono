@@ -5,6 +5,7 @@
  *	Sebastien Pouliot  <sebastien@ximian.com>
  *
  * Copyright 2004-2009 Novell, Inc (http://www.novell.com)
+ * Licensed under the MIT license. See LICENSE file in the project root for full license information.
  */
 
 #ifdef HAVE_CONFIG_H
@@ -275,9 +276,9 @@ ves_icall_System_Security_Principal_WindowsIdentity_GetCurrentToken (void)
 	 */
 
 	/* thread may be impersonating somebody */
-	if (OpenThreadToken (GetCurrentThread (), TOKEN_QUERY, 1, &token) == 0) {
+	if (OpenThreadToken (GetCurrentThread (), MAXIMUM_ALLOWED, 1, &token) == 0) {
 		/* if not take the process identity */
-		OpenProcessToken (GetCurrentProcess (), TOKEN_QUERY, &token);
+		OpenProcessToken (GetCurrentProcess (), MAXIMUM_ALLOWED, &token);
 	}
 #else
 	token = GINT_TO_POINTER (geteuid ());
@@ -390,10 +391,10 @@ ves_icall_System_Security_Principal_WindowsIdentity_GetUserToken (MonoString *us
 MonoArray*
 ves_icall_System_Security_Principal_WindowsIdentity_GetRoles (gpointer token) 
 {
+	MonoError error;
 	MonoArray *array = NULL;
 	MonoDomain *domain = mono_domain_get (); 
 #ifdef HOST_WIN32
-	MonoError error;
 	gint32 size = 0;
 
 	GetTokenInformation (token, TokenGroups, NULL, size, (PDWORD)&size);
@@ -403,7 +404,11 @@ ves_icall_System_Security_Principal_WindowsIdentity_GetRoles (gpointer token)
 			int i=0;
 			int num = tg->GroupCount;
 
-			array = mono_array_new (domain, mono_get_string_class (), num);
+			array = mono_array_new_checked (domain, mono_get_string_class (), num, &error);
+			if (mono_error_set_pending_exception (&error)) {
+				g_free (tg);
+				return NULL;
+			}
 
 			for (i=0; i < num; i++) {
 				gint32 size = 0;
@@ -430,7 +435,8 @@ ves_icall_System_Security_Principal_WindowsIdentity_GetRoles (gpointer token)
 #endif
 	if (!array) {
 		/* return empty array of string, i.e. string [0] */
-		array = mono_array_new (domain, mono_get_string_class (), 0);
+		array = mono_array_new_checked (domain, mono_get_string_class (), 0, &error);
+		mono_error_set_pending_exception (&error);
 	}
 	return array;
 }
@@ -654,9 +660,10 @@ IsMachineProtected (gunichar2 *path)
 {
 	gboolean success = FALSE;
 	PACL pDACL = NULL;
+	PSECURITY_DESCRIPTOR pSD = NULL;
 	PSID pEveryoneSid = NULL;
 
-	DWORD dwRes = GetNamedSecurityInfoW (path, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, NULL, NULL, &pDACL, NULL, NULL);
+	DWORD dwRes = GetNamedSecurityInfoW (path, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, NULL, NULL, &pDACL, NULL, &pSD);
 	if (dwRes != ERROR_SUCCESS)
 		return FALSE;
 
@@ -673,8 +680,8 @@ IsMachineProtected (gunichar2 *path)
 	/* Note: we don't need to check our own access - 
 	we'll know soon enough when reading the file */
 
-	if (pDACL)
-		LocalFree (pDACL);
+	if (pSD)
+		LocalFree (pSD);
 
 	return success;
 }

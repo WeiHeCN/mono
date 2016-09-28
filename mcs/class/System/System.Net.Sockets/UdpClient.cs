@@ -125,12 +125,18 @@ namespace System.Net.Sockets
 				socket.Bind (localEP);
 		}
 
-#region Close
+		public void AllowNatTraversal (bool allowed)
+		{
+			if (allowed)
+				socket.SetIPProtectionLevel (IPProtectionLevel.Unrestricted);
+			else
+				socket.SetIPProtectionLevel (IPProtectionLevel.EdgeRestricted);
+		}
+
 		public void Close ()
 		{
-			((IDisposable) this).Dispose ();	
+			Dispose ();
 		}
-#endregion
 #region Connect
 
 		void DoConnect (IPEndPoint endPoint)
@@ -570,7 +576,7 @@ namespace System.Net.Sockets
 
 #endregion
 #region Disposing
-		void IDisposable.Dispose ()
+		public void Dispose ()
 		{
 			Dispose (true);
 			GC.SuppressFinalize (this);

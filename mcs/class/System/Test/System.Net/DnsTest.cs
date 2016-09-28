@@ -9,7 +9,7 @@
 // 
 
 using System;
-using System.Collections;
+using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading;
@@ -29,40 +29,77 @@ namespace MonoTests.System.Net
 		private uint site1IP = 134744072, site2IP = 134743044; // Big-Endian
 
 		[Test]
+#if FEATURE_NO_BSD_SOCKETS
+		[ExpectedException (typeof (PlatformNotSupportedException))]
+#endif
 		public void AsyncGetHostByName ()
 		{
-			IAsyncResult r;
-			r = Dns.BeginGetHostByName (site1Name, new AsyncCallback (GetHostByNameCallback), null);
-
 			IAsyncResult async = Dns.BeginGetHostByName (site1Name, null, null);
 			IPHostEntry entry = Dns.EndGetHostByName (async);
 			SubTestValidIPHostEntry (entry);
 			Assert.IsTrue (entry.HostName == "google-public-dns-a.google.com");
 		}
 
-		void GetHostByNameCallback (IAsyncResult ar)
+		[Test]
+#if FEATURE_NO_BSD_SOCKETS
+		[ExpectedException (typeof (PlatformNotSupportedException))]
+#endif
+		public void AsyncGetHostByNameCallback ()
 		{
-			IPHostEntry h;
-			h = Dns.EndGetHostByName (ar);
-			SubTestValidIPHostEntry (h);
+			var evt = new ManualResetEvent (false);
+			Exception ex = null;
+			Dns.BeginGetHostByName (site1Name, new AsyncCallback ((IAsyncResult ar) =>
+			{
+				try {
+					IPHostEntry h;
+					h = Dns.EndGetHostByName (ar);
+					SubTestValidIPHostEntry (h);
+				} catch (Exception e) {
+					ex = e;
+				} finally {
+					evt.Set ();
+				}
+			}), null);
+
+			Assert.IsTrue (evt.WaitOne (TimeSpan.FromSeconds (60)), "Wait");
+			Assert.IsNull (ex, "Exception");
 		}
 
 		[Test]
+#if FEATURE_NO_BSD_SOCKETS
+		[ExpectedException (typeof (PlatformNotSupportedException))]
+#endif
 		public void AsyncResolve ()
 		{
-			IAsyncResult r;
-			r = Dns.BeginResolve (site1Name, new AsyncCallback (ResolveCallback), null);
-
 			IAsyncResult async = Dns.BeginResolve (site1Dot, null, null);
 			IPHostEntry entry = Dns.EndResolve (async);
 			SubTestValidIPHostEntry (entry);
-			Assert.AreEqual (site1Dot, entry.AddressList [0].ToString ());
+			var ip = GetIPv4Address (entry);
+			Assert.AreEqual (site1Dot, ip.ToString ());
 		}
 
-		void ResolveCallback (IAsyncResult ar)
+		[Test]
+#if FEATURE_NO_BSD_SOCKETS
+		[ExpectedException (typeof (PlatformNotSupportedException))]
+#endif
+		public void AsyncResolveCallback ()
 		{
-			IPHostEntry h = Dns.EndResolve (ar);
-			SubTestValidIPHostEntry (h);
+			var evt = new ManualResetEvent (false);
+			Exception ex = null;
+			Dns.BeginResolve (site1Name, new AsyncCallback ((IAsyncResult ar) =>
+			{
+				try {
+					IPHostEntry h = Dns.EndResolve (ar);
+					SubTestValidIPHostEntry (h);
+				} catch (Exception e) {
+					ex = e;
+				} finally {
+					evt.Set ();
+				}
+			}), null);
+
+			Assert.IsTrue (evt.WaitOne (TimeSpan.FromSeconds (60)), "Wait");
+			Assert.IsNull (ex, "Exception");
 		}
 
 		[Test]
@@ -71,7 +108,7 @@ namespace MonoTests.System.Net
 			try {
 				Dns.BeginGetHostAddresses (
 					(string) null,
-					new AsyncCallback (GetHostAddressesCallback),
+					new AsyncCallback (ShouldntBeCalled),
 					null);
 				Assert.Fail ("#1");
 			} catch (ArgumentNullException ex) {
@@ -89,7 +126,7 @@ namespace MonoTests.System.Net
 			try {
 				Dns.BeginGetHostAddresses (
 					"0.0.0.0",
-					new AsyncCallback (GetHostAddressesCallback),
+					new AsyncCallback (ShouldntBeCalled),
 					null);
 				Assert.Fail ("#A1");
 			} catch (ArgumentException ex) {
@@ -106,7 +143,7 @@ namespace MonoTests.System.Net
 			try {
 				Dns.BeginGetHostAddresses (
 					"::0",
-					new AsyncCallback (GetHostAddressesCallback),
+					new AsyncCallback (ShouldntBeCalled),
 					null);
 				Assert.Fail ("#B1");
 			} catch (ArgumentException ex) {
@@ -120,10 +157,9 @@ namespace MonoTests.System.Net
 			}
 		}
 
-		void GetHostAddressesCallback (IAsyncResult ar)
+		void ShouldntBeCalled (IAsyncResult ar)
 		{
-			IPAddress [] addresses = Dns.EndGetHostAddresses (ar);
-			Assert.IsNotNull (addresses);
+			Assert.Fail ("Should not be called");
 		}
 
 		[Test]
@@ -180,6 +216,9 @@ namespace MonoTests.System.Net
 		}
 
 		[Test]
+#if FEATURE_NO_BSD_SOCKETS
+		[ExpectedException (typeof (PlatformNotSupportedException))]
+#endif
 		public void GetHostByName ()
 		{
 			SubTestGetHostByName (site1Name, site1Dot);
@@ -205,12 +244,21 @@ namespace MonoTests.System.Net
 			}
 		}
 
+		static IPAddress GetIPv4Address (IPHostEntry h)
+		{
+			var al = h.AddressList.FirstOrDefault (x => x.AddressFamily == AddressFamily.InterNetwork);
+			if (al == null)
+				Assert.Ignore ("Could not resolve an IPv4 address as required by this test case, e.g. running on an IPv6 only network");
+			return al;
+		}
+
 		void SubTestGetHostByName (string siteName, string siteDot)
 		{
 			IPHostEntry h = Dns.GetHostByName (siteName);
 			SubTestValidIPHostEntry (h);
 			Assert.AreEqual (siteName, h.HostName, "siteName");
-			Assert.AreEqual (siteDot, h.AddressList [0].ToString (), "siteDot");
+			var ip = GetIPv4Address (h);
+			Assert.AreEqual (siteDot, ip.ToString (), "siteDot");
 		}
 
 		[Test]
@@ -287,7 +335,8 @@ namespace MonoTests.System.Net
 			IPAddress addr = new IPAddress (IPAddress.NetworkToHostOrder ((int) site1IP));
 			IPHostEntry h = Dns.GetHostByAddress (addr);
 			SubTestValidIPHostEntry (h);
-			Assert.AreEqual (addr.ToString (), h.AddressList [0].ToString ());
+			var ip = GetIPv4Address (h);
+			Assert.AreEqual (addr.ToString (), ip.ToString ());
 		}
 
 		[Test]
@@ -296,15 +345,19 @@ namespace MonoTests.System.Net
 			IPAddress addr = new IPAddress (IPAddress.NetworkToHostOrder ((int) site2IP));
 			IPHostEntry h = Dns.GetHostByAddress (addr);
 			SubTestValidIPHostEntry (h);
-			Assert.AreEqual (addr.ToString (), h.AddressList [0].ToString ());
+			var ip = GetIPv4Address (h);
+			Assert.AreEqual (addr.ToString (), ip.ToString ());
 		}
 
 		[Test]
+#if FEATURE_NO_BSD_SOCKETS
+		[ExpectedException (typeof (PlatformNotSupportedException))]
+#endif
 		public void BeginResolve_HostName_Null ()
 		{
 			try {
 				Dns.BeginResolve ((string) null,
-					new AsyncCallback (ResolveCallback),
+					new AsyncCallback (ShouldntBeCalled),
 					null);
 				Assert.Fail ("#1");
 			} catch (ArgumentNullException ex) {
@@ -316,6 +369,9 @@ namespace MonoTests.System.Net
 		}
 
 		[Test]
+#if FEATURE_NO_BSD_SOCKETS
+		[ExpectedException (typeof (PlatformNotSupportedException))]
+#endif
 		public void Resolve ()
 		{
 			SubTestResolve (site1Name);
@@ -331,6 +387,9 @@ namespace MonoTests.System.Net
 		}
 
 		[Test]
+#if FEATURE_NO_BSD_SOCKETS
+		[ExpectedException (typeof (PlatformNotSupportedException))]
+#endif
 		public void Resolve_HostName_Null ()
 		{
 			try {
@@ -345,12 +404,15 @@ namespace MonoTests.System.Net
 		}
 
 		[Test] // BeginGetHostEntry (IPAddress, AsyncCallback, Object)
+#if FEATURE_NO_BSD_SOCKETS
+		[ExpectedException (typeof (PlatformNotSupportedException))]
+#endif
 		public void BeginGetHostEntry1_Address_Null ()
 		{
 			try {
 				Dns.BeginGetHostEntry (
 					(IPAddress) null,
-					new AsyncCallback (GetHostAddressesCallback),
+					new AsyncCallback (ShouldntBeCalled),
 					null);
 				Assert.Fail ("#1");
 			} catch (ArgumentNullException ex) {
@@ -362,12 +424,15 @@ namespace MonoTests.System.Net
 		}
 
 		[Test] // BeginGetHostEntry (String, AsyncCallback, Object)
+#if FEATURE_NO_BSD_SOCKETS
+		[ExpectedException (typeof (PlatformNotSupportedException))]
+#endif
 		public void BeginGetHostEntry2_HostNameOrAddress_Null ()
 		{
 			try {
 				Dns.BeginGetHostEntry (
 					(string) null,
-					new AsyncCallback (GetHostAddressesCallback),
+					new AsyncCallback (ShouldntBeCalled),
 					null);
 				Assert.Fail ("#1");
 			} catch (ArgumentNullException ex) {
@@ -379,6 +444,9 @@ namespace MonoTests.System.Net
 		}
 
 		[Test] // BeginGetHostEntry (String, AsyncCallback, Object)
+#if FEATURE_NO_BSD_SOCKETS
+		[ExpectedException (typeof (PlatformNotSupportedException))]
+#endif
 		public void BeginGetHostEntry2_HostNameOrAddress_UnspecifiedAddress ()
 		{
 			// IPv4
@@ -437,6 +505,9 @@ namespace MonoTests.System.Net
 		}
 
 		[Test] // GetHostEntry (String)
+#if FEATURE_NO_BSD_SOCKETS
+		[ExpectedException (typeof (PlatformNotSupportedException))]
+#endif
 		public void GetHostEntry2 ()
 		{
 			Dns.GetHostEntry (site1Name); // hostname

@@ -7,10 +7,12 @@
  * Copyright 2001-2003 Ximian, Inc (http://www.ximian.com)
  * Copyright 2004-2009 Novell, Inc (http://www.novell.com)
  * Copyright 2011 Rodrigo Kumpera
+ * Licensed under the MIT license. See LICENSE file in the project root for full license information.
  */
 #include <config.h>
 
 #include <mono/metadata/object-internals.h>
+#include <mono/metadata/dynamic-image-internals.h>
 #include <mono/metadata/verify.h>
 #include <mono/metadata/verify-internals.h>
 #include <mono/metadata/opcodes.h>
@@ -370,7 +372,7 @@ static gboolean
 token_bounds_check (MonoImage *image, guint32 token)
 {
 	if (image_is_dynamic (image))
-		return mono_reflection_is_valid_dynamic_token ((MonoDynamicImage*)image, token);
+		return mono_dynamic_image_is_valid_token ((MonoDynamicImage*)image, token);
 	return image->tables [mono_metadata_token_table (token)].rows >= mono_metadata_token_index (token) && mono_metadata_token_index (token) > 0;
 }
 
@@ -884,12 +886,11 @@ mono_type_is_valid_in_context (VerifyContext *ctx, MonoType *type)
 
 	klass = mono_class_from_mono_type (type);
 	mono_class_init (klass);
-	if (mono_loader_get_last_error () || mono_class_has_failure (klass)) {
+	if (mono_class_has_failure (klass)) {
 		if (klass->generic_class && !mono_class_is_valid_generic_instantiation (NULL, klass))
 			ADD_VERIFY_ERROR2 (ctx, g_strdup_printf ("Invalid generic instantiation of type %s.%s at 0x%04x", klass->name_space, klass->name, ctx->ip_offset), MONO_EXCEPTION_TYPE_LOAD);
 		else
 			ADD_VERIFY_ERROR2 (ctx, g_strdup_printf ("Could not load type %s.%s at 0x%04x", klass->name_space, klass->name, ctx->ip_offset), MONO_EXCEPTION_TYPE_LOAD);
-		mono_loader_clear_error ();
 		return FALSE;
 	}
 
@@ -1020,9 +1021,8 @@ verifier_load_type (VerifyContext *ctx, int token, const char *opcode) {
 		mono_error_cleanup (&error); /*FIXME don't swallow the error */
 	}
 
-	if (!type || mono_loader_get_last_error ()) {
+	if (!type) {
 		ADD_VERIFY_ERROR2 (ctx, g_strdup_printf ("Cannot load type from token 0x%08x for %s at 0x%04x", token, opcode, ctx->ip_offset), MONO_EXCEPTION_BAD_IMAGE);
-		mono_loader_clear_error ();
 		return NULL;
 	}
 
@@ -2769,7 +2769,7 @@ verify_delegate_compatibility (VerifyContext *ctx, MonoClass *delegate, ILStackD
 			CODE_NOT_VERIFIABLE (ctx, g_strdup_printf ("This object not compatible with function pointer for delegate creation at 0x%04x", ctx->ip_offset));
 	} else {
 		if (method->flags & METHOD_ATTRIBUTE_STATIC) {
-			if (!stack_slot_is_null_literal (value) && !is_first_arg_bound)
+			if (!stack_slot_is_null_literal (value))
 				CODE_NOT_VERIFIABLE (ctx, g_strdup_printf ("Non-null this args used with static function for delegate creation at 0x%04x", ctx->ip_offset));
 		} else {
 			if (!verify_stack_type_compatibility_full (ctx, &method->klass->byval_arg, value, FALSE, TRUE) && !stack_slot_is_null_literal (value))
@@ -5016,7 +5016,7 @@ mono_method_verify (MonoMethod *method, int level)
 	if (!ctx.valid)
 		goto cleanup;
 
-	original_bb = bb = mono_basic_block_split (method, &error);
+	original_bb = bb = mono_basic_block_split (method, &error, ctx.header);
 	if (!mono_error_ok (&error)) {
 		ADD_VERIFY_ERROR (&ctx, g_strdup_printf ("Invalid branch target: %s", mono_error_get_message (&error)));
 		mono_error_cleanup (&error);
